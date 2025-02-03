@@ -71,26 +71,29 @@ class Controller(LeafSystem):
             update=self.update_data)
     
     def init_data(self,plant):
-        #Initialisation of the data for graphs 
-        self.time = []
+        #Initialisation of the data for graphs for plotting
+
+        #Arrays storing the time
+        self.time_array = []
+
+        #Arrays storing the torques applied to the wheels
         self.tau_l_array = []
         self.tau_r_array = []
-        self.x_dot = []
-        self.y_dot = []
-        self.w_z = []
-        self.x_rel = []
-        self.y_rel = []
-        self.theta_array = []
-        self.forward_error = []
-        self.angular_error = []
-        #Initialisation of the transformation matrices
-        self.abs_to_rel = []
-        self.rel_to_abs = []
 
+        #Arrays storing the relative speeds of the robot
+        self.x_dot_array = []
+        self.y_dot_array = []
+        self.w_z_array = []
+        
+        #Arrays storing the absolute position of the robot
         self.X_pos_array = []
         self.Y_pos_array = []
-        #Initialisation of the controller parameters
-        self.Kp_ = [3.2]
+        self.Theta_array = []
+
+        #Arrays storing the errors in x, y, theta (relative)
+        self.y_error_array = []
+        self.x_error_array = []
+        self.angular_error = []
 
     def update_data(self, context, discrete_state):
 
@@ -98,19 +101,39 @@ class Controller(LeafSystem):
 
         current_time = context.get_time()
 
-        self.time.append(current_time)
+        self.time_array.append(current_time)
+
         self.tau_l_array.append(np.round( self.tau_l, 2))
         self.tau_r_array.append(np.round( self.tau_r, 2))
-        self.x_dot.append(np.round( self.rel_vel[0], 2))
-        self.y_dot.append(np.round( self.rel_vel[1], 2))
-        self.w_z.append(np.round( self.rel_vel[2], 2))
-        self.theta_array.append(np.round( self.theta, 2))
-        self.forward_error.append(self.x_error)
+
+        self.x_dot_array.append(np.round( self.rel_vel[0], 2))
+        self.y_dot_array.append(np.round( self.rel_vel[1], 2))
+        self.w_z_array.append(np.round( self.rel_vel[2], 2))
+
+        self.X_pos_array.append(np.round(state[4],2))
+        self.Y_pos_array.append(np.round(state[5],2))
+        self.Theta_array.append(np.round( self.theta, 2))
+
+        self.x_error_array.append(self.x_error)
+        self.y_error_array.append(self.y_error)
         self.angular_error.append(self.theta_error)
-        self.X_pos_array.append(state[4])
-        self.Y_pos_array.append(state[5])
+
     def compute_tau_u(self, context, discrete_state):
+        """
+        robot_rot_quaternion = self.q[0:4]
+        robot_pos = self.q[4:7]
+        robot_wheel_rot = self.q[7:11]
+        robot_ang_velocity = self.q[11:14]
+        robot_speed = self.q[14:17] #Absolute values
+        robot_wheel_ang_velocity = self.q[17:21]
+        """
         
+         #Initialisation of the transformation matrices
+        self.abs_to_rel = []
+        self.rel_to_abs = []
+        #Initialisation of the controller parameters
+
+        self.Kp_ = [3.2]
         # Evaluate the input ports
         self.q_d = self._desired_state_port.Eval(context)
         self.q = self._current_state_port.Eval(context)
@@ -133,49 +156,55 @@ class Controller(LeafSystem):
             [self.q[15]],
             [self.q[13]]
         ])
-        #Necessary relative velocities : x*, x*, w_z
-        self.rel_vel = self.abs_to_rel @ self.abs_vel
 
-        #Error computation
-        X_error = self.q_d[4] - self.q[4]
-        Y_error = self.q_d[5] - self.q[5]
-
-        self.theta_error = np.arctan2(Y_error, X_error) - self.theta
-        self.x_error = X_error * np.cos(self.theta) + Y_error * np.sin(self.theta)
-
-        x_dot_ref = 0.2 * self.x_error
-        x_dot_ref = np.clip(x_dot_ref, -1, 1)
-
-        ref_angle = 2 * np.arctan2(self.q_d[3],self.q_d[0])
-        self.y_error = -X_error * np.sin(self.theta) + Y_error * np.cos(self.theta)
-        w_z_ref = 25 * self.y_error - 5*self.q[13]
-        w_z_ref = np.clip(w_z_ref, -2, 2)
-
-        r = 0.165
-        d = 0.613
+        r = 0.165 #Wheel radius
+        d = 0.613 #Robot width (distance between wheels)
 
         inv_kin_mat = np.array([
             [1/r, d/(2*r)],
             [1/r, -d/(2*r)],
         ])
 
+
+        #Necessary relative velocities : x*, x*, w_z
+        self.rel_vel = self.abs_to_rel @ self.abs_vel
+
+        #Error computation in absolutevalues
+        X_error = self.q_d[4] - self.q[4]
+        Y_error = self.q_d[5] - self.q[5]
+
+        #Final angle for the robot in absolute/relative
+        ref_angle = 2 * np.arctan2(self.q_d[3],self.q_d[0])
+
+        #Angular error between the robot position and desired position
+        self.theta_error = np.arctan2(Y_error, X_error) - self.theta
+
+        #Y error between the robot position and desired position Absolute error X and Y-> relative error y
+        self.y_error = -X_error * np.sin(self.theta) + Y_error * np.cos(self.theta)
+
+        #X error between the robot position and desired position Absolute errors X and Y -> relative error x
+        self.x_error = X_error * np.cos(self.theta) + Y_error * np.sin(self.theta)
+
+        x_dot_ref = 1 * self.x_error - 0.2 * self.rel_vel[0]
+        x_dot_ref = np.clip(x_dot_ref, -1, 1)
+
+        w_z_ref = 50 * self.y_error
+        w_z_ref = np.clip(w_z_ref, -2, 2)
+
+        #=======================================
+        #x_dot_ref = 1
+        #w_z_ref = 1/2*np.sin(context.get_time()/2)
+        #Computation of the reference speeds of the wheels
         w_ref = inv_kin_mat @ np.array([[x_dot_ref],[w_z_ref]])
+        
+        #Regulation of
+        self.tau_l = 20*self.Kp_[0]*(w_ref[1] - self.q[17])
+        self.tau_r = 20*self.Kp_[0]*(w_ref[0] - self.q[18])
 
-        self.tau_l = self.Kp_[0]*(w_ref[1] - self.q[17])
-        self.tau_r = self.Kp_[0]*(w_ref[0] - self.q[18])
-
-        self.tau_l = np.clip(self.tau_l , -12, 12)
-        self.tau_r = np.clip(self.tau_r , -12, 12)
+        self.tau_l = np.clip(self.tau_l , -20, 20)
+        self.tau_r = np.clip(self.tau_r , -20, 20)
 
         self.tau = [self.tau_l, self.tau_r, self.tau_l, self.tau_r]
-        """
-        robot_rot_quaternion = self.q[0:4]
-        robot_pos = self.q[4:7]
-        robot_wheel_rot = self.q[7:11]
-        robot_ang_velocity = self.q[11:14]
-        robot_speed = self.q[14:17] #Absolute values
-        robot_wheel_ang_velocity = self.q[17:21]
-        """
         # Compute gravity forces for the current state
         self.plant_context_ad.SetDiscreteState(self.q)
         
@@ -194,7 +223,7 @@ def create_sim_scene(sim_time_step):
     plant.Finalize()
     
     #Initial rotation angle(z axis) of the robot 
-    init_angle_deg = 90; 
+    init_angle_deg = -45; 
     rotation_angle = init_angle_deg/180*np.pi 
 
     # Set the initial position of the robot
@@ -209,7 +238,8 @@ def create_sim_scene(sim_time_step):
     # Create a constant source for desired positions
     desired_rotation_dedg = 0
     desired_rotation_angle = init_angle_deg/180*np.pi 
-    despos_ = [np.cos(desired_rotation_angle/2), 0.0, 0.0, np.sin(desired_rotation_angle/2),0.5,0.5,0]
+    despos_ = [np.cos(desired_rotation_angle/2), 0.0, 0.0, np.sin(desired_rotation_angle/2),7,-4,0]
+
     des_pos = builder.AddNamedSystem("Desired position", ConstantVectorSource(despos_))
     
     # Connect systems: plant outputs to controller inputs, and vice versa
@@ -248,19 +278,19 @@ def plotGraphs(controller):
     #Speed plots
     fig0,axes0=plt.subplots(2,2)
     fig0.canvas.set_window_title('Speeds')    
-    axes0[0][0].plot(controller.time,controller.theta_array)
+    axes0[0][0].plot(controller.time_array, controller.Theta_array)
     axes0[0][0].set_title(f'theta')
     axes0[0][0].grid(which='both',linestyle='--')
 
-    axes0[1][0].plot(controller.time,controller.x_dot)
+    axes0[1][0].plot(controller.time_array, controller.x_dot_array)
     axes0[1][0].set_title(f'X')
     axes0[1][0].grid(which='both',linestyle='--')
 
-    axes0[0][1].plot(controller.time,controller.y_dot)
+    axes0[0][1].plot(controller.time_array, controller.y_dot_array)
     axes0[0][1].set_title(f'Y')
     axes0[0][1].grid(which='both',linestyle='--')
 
-    axes0[1][1].plot(controller.time,controller.w_z)
+    axes0[1][1].plot(controller.time_array, controller.w_z_array)
     axes0[1][1].set_title(f'w_z')
     axes0[1][1].grid(which='both',linestyle='--')
     plt.subplots_adjust(hspace=0.5)
@@ -268,33 +298,36 @@ def plotGraphs(controller):
     fig1,axes1=plt.subplots(2,2)
     fig1.canvas.set_window_title('Torques') 
 
-    axes1[0][0].plot(controller.time,controller.tau_l_array)
+    axes1[0][0].plot(controller.time_array, controller.tau_l_array)
     axes1[0][0].set_title(f'Left torque')
     axes1[0][0].grid(which='both',linestyle='--')
 
-    axes1[0][1].plot(controller.time,controller.tau_r_array)
+    axes1[0][1].plot(controller.time_array, controller.tau_r_array)
     axes1[0][1].set_title(f'Right torque')
     axes1[0][1].grid(which='both',linestyle='--')
 
-    axes1[1][0].plot(controller.time,controller.forward_error)
+    axes1[1][0].plot(controller.time_array,controller.x_error_array)
     axes1[1][0].set_title(f'Forward Error')
     axes1[1][0].grid(which='both',linestyle='--')
 
 
-    axes1[1][1].plot(controller.time,controller.angular_error)
+    axes1[1][1].plot(controller.time_array,controller.y_error_array)
     axes1[1][1].set_title(f'Angular Error')
     axes1[1][1].grid(which='both',linestyle='--')
-
-
-    fig1,axes1=plt.subplots(2,2)
-    fig1.canvas.set_window_title('Torques') 
-
-    axes1[0][0].plot(controller.X_pos_array,controller.Y_pos_array)
-    axes1[0][0].set_title(f'Robot position')
-    axes1[0][0].grid(which='both',linestyle='--')
-
-
     plt.subplots_adjust(hspace=0.5)
+    """
+    fig2,axes2=plt.subplots(1,1)
+    fig2.canvas.set_window_title('Position') 
+    axes1[0][0].plot(controller.Y_pos_array,controller.Y_pos_array)
+    axes1[0][0].set_title(f'Position')
+    axes1[0][0].grid(which='both',linestyle='--')
+    """
+    plt.subplots_adjust(hspace=0.5)
+    plt.figure()
+    plt.plot(controller.X_pos_array,controller.Y_pos_array)
+    plt.xlabel('x(m)')
+    plt.ylabel('y(m)')
+
     plt.show()
 
 
