@@ -185,7 +185,7 @@ class Controller(LeafSystem):
         #X error between the robot position and desired position Absolute errors X and Y -> relative error x
         self.x_error = X_error * np.cos(self.theta) + Y_error * np.sin(self.theta)
 
-        x_dot_ref = 1 * self.x_error - 0.2 * self.rel_vel[0]
+        x_dot_ref = 1 * self.x_error - 0.2 * float(self.rel_vel[0])
         x_dot_ref = np.clip(x_dot_ref, -1, 1)
 
         w_z_ref = 50 * self.y_error
