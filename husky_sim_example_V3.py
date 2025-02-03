@@ -87,9 +87,10 @@ class Controller(LeafSystem):
         self.abs_to_rel = []
         self.rel_to_abs = []
 
+        self.X_pos_array = []
+        self.Y_pos_array = []
         #Initialisation of the controller parameters
         self.Kp_ = [3.2]
-        self.Kd_ = [0.6]
 
     def update_data(self, context, discrete_state):
 
@@ -106,6 +107,8 @@ class Controller(LeafSystem):
         self.theta_array.append(np.round( self.theta, 2))
         self.forward_error.append(self.x_error)
         self.angular_error.append(self.theta_error)
+        self.X_pos_array.append(state[4])
+        self.Y_pos_array.append(state[5])
     def compute_tau_u(self, context, discrete_state):
         
         # Evaluate the input ports
@@ -139,10 +142,13 @@ class Controller(LeafSystem):
 
         self.theta_error = np.arctan2(Y_error, X_error) - self.theta
         self.x_error = X_error * np.cos(self.theta) + Y_error * np.sin(self.theta)
+
         x_dot_ref = 0.2 * self.x_error
         x_dot_ref = np.clip(x_dot_ref, -1, 1)
 
-        w_z_ref = 6.6 * self.theta_error - 5*self.q[13]
+        ref_angle = 2 * np.arctan2(self.q_d[3],self.q_d[0])
+        self.y_error = -X_error * np.sin(self.theta) + Y_error * np.cos(self.theta)
+        w_z_ref = 25 * self.y_error - 5*self.q[13]
         w_z_ref = np.clip(w_z_ref, -2, 2)
 
         r = 0.165
@@ -157,6 +163,10 @@ class Controller(LeafSystem):
 
         self.tau_l = self.Kp_[0]*(w_ref[1] - self.q[17])
         self.tau_r = self.Kp_[0]*(w_ref[0] - self.q[18])
+
+        self.tau_l = np.clip(self.tau_l , -12, 12)
+        self.tau_r = np.clip(self.tau_r , -12, 12)
+
         self.tau = [self.tau_l, self.tau_r, self.tau_l, self.tau_r]
         """
         robot_rot_quaternion = self.q[0:4]
@@ -184,7 +194,7 @@ def create_sim_scene(sim_time_step):
     plant.Finalize()
     
     #Initial rotation angle(z axis) of the robot 
-    init_angle_deg = 0; 
+    init_angle_deg = 90; 
     rotation_angle = init_angle_deg/180*np.pi 
 
     # Set the initial position of the robot
@@ -197,7 +207,9 @@ def create_sim_scene(sim_time_step):
     controller = builder.AddNamedSystem("PD controller", Controller(plant))
     
     # Create a constant source for desired positions
-    despos_ = [0,0,0,0,1,1,0]
+    desired_rotation_dedg = 0
+    desired_rotation_angle = init_angle_deg/180*np.pi 
+    despos_ = [np.cos(desired_rotation_angle/2), 0.0, 0.0, np.sin(desired_rotation_angle/2),0.5,0.5,0]
     des_pos = builder.AddNamedSystem("Desired position", ConstantVectorSource(despos_))
     
     # Connect systems: plant outputs to controller inputs, and vice versa
@@ -228,7 +240,7 @@ def run_simulation(sim_time_step):
     
     # Run simulation and record for replays in MeshCat
     meshcat.StartRecording()
-    simulator.AdvanceTo(40.0)  # Adjust this time as needed
+    simulator.AdvanceTo(50.0)  # Adjust this time as needed
     meshcat.PublishRecording() #For the replay
     plotGraphs(controller)
 
@@ -272,6 +284,16 @@ def plotGraphs(controller):
     axes1[1][1].plot(controller.time,controller.angular_error)
     axes1[1][1].set_title(f'Angular Error')
     axes1[1][1].grid(which='both',linestyle='--')
+
+
+    fig1,axes1=plt.subplots(2,2)
+    fig1.canvas.set_window_title('Torques') 
+
+    axes1[0][0].plot(controller.X_pos_array,controller.Y_pos_array)
+    axes1[0][0].set_title(f'Robot position')
+    axes1[0][0].grid(which='both',linestyle='--')
+
+
     plt.subplots_adjust(hspace=0.5)
     plt.show()
 
