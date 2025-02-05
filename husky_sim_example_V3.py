@@ -26,7 +26,7 @@ def get_relative_path(path):
 
 # Start the visualizer and clean up previous instances
 meshcat = StartMeshcat()
-visualize = True # Bool to switch the viszualization and simulation
+visualize = False # Bool to switch the viszualization and simulation
 meshcat.Delete()
 meshcat.DeleteAddedControls()
 
@@ -41,7 +41,7 @@ scene_path = get_relative_path("../../models/objects&scenes/scenes/floor.sdf")
 import math
 
 class Controller(LeafSystem):
-    def __init__(self, plant):
+    def __init__(self, plant, plant_context):
         super().__init__()
 
         #Creation of the arrays storing all the data for plotting
@@ -53,7 +53,7 @@ class Controller(LeafSystem):
 
         self.step = 1
         # Store plant and context for dynamics calculations
-        self.plant, self.plant_context_ad = plant, plant.CreateDefaultContext()
+        self.plant, self.plant_context = plant, plant_context
 
         # Declare discrete state and output port for control input (tau_u)
         state_index = self.DeclareDiscreteState(4)  # 4 state variables.
@@ -66,7 +66,7 @@ class Controller(LeafSystem):
         
         
         self.DeclarePeriodicDiscreteUpdateEvent(
-            period_sec=1/100,  # One millisecond time step.
+            period_sec=1/1000,  # One millisecond time step.
             offset_sec=0.0,  # The first event is at time zero.
             update=self.update_data)
     
@@ -95,6 +95,8 @@ class Controller(LeafSystem):
         self.x_error_array = []
         self.angular_error = []
 
+        self.x_dot_ref_array = []
+        self.w_z_ref_array = []
     def update_data(self, context, discrete_state):
 
         state = self._current_state_port.Eval(context)
@@ -118,6 +120,9 @@ class Controller(LeafSystem):
         self.y_error_array.append(self.y_error)
         self.angular_error.append(self.theta_error)
 
+        self.x_dot_ref_array.append(self.x_dot_ref)
+        self.w_z_ref_array.append(self.w_z_ref)
+
     def compute_tau_u(self, context, discrete_state):
         """
         robot_rot_quaternion = self.q[0:4]
@@ -127,7 +132,10 @@ class Controller(LeafSystem):
         robot_speed = self.q[14:17] #Absolute values
         robot_wheel_ang_velocity = self.q[17:21]
         """
-        
+        self.q = self._current_state_port.Eval(context)
+        self.plant.SetPositionsAndVelocities(self.plant_context, self.q)
+        POSEE = self.plant.EvalBodyPoseInWorld(self.plant_context, self.plant.GetBodyByName("base_link"))
+        print(POSEE)
          #Initialisation of the transformation matrices
         self.abs_to_rel = []
         self.rel_to_abs = []
@@ -136,7 +144,7 @@ class Controller(LeafSystem):
         self.Kp_ = [3.2]
         # Evaluate the input ports
         self.q_d = self._desired_state_port.Eval(context)
-        self.q = self._current_state_port.Eval(context)
+        
 
         #Computation of rotation angle
         self.theta = 2 * np.arctan2(self.q[3],self.q[0])
@@ -185,17 +193,18 @@ class Controller(LeafSystem):
         #X error between the robot position and desired position Absolute errors X and Y -> relative error x
         self.x_error = X_error * np.cos(self.theta) + Y_error * np.sin(self.theta)
 
-        x_dot_ref = 1 * self.x_error - 0.2 * float(self.rel_vel[0])
-        x_dot_ref = np.clip(x_dot_ref, -1, 1)
+        self.x_dot_ref = 1 * self.x_error - 0.2 * float(self.rel_vel[0])
+        self.x_dot_ref = np.clip(self.x_dot_ref, -1, 1)
 
-        w_z_ref = 50 * self.y_error
-        w_z_ref = np.clip(w_z_ref, -2, 2)
+        self.w_z_ref = 30 * self.y_error
+        self.w_z_ref = np.clip(self.w_z_ref, -2, 2)
 
         #=======================================
         #x_dot_ref = 1
         #w_z_ref = 1/2*np.sin(context.get_time()/2)
+
         #Computation of the reference speeds of the wheels
-        w_ref = inv_kin_mat @ np.array([[x_dot_ref],[w_z_ref]])
+        w_ref = inv_kin_mat @ np.array([[self.x_dot_ref],[self.w_z_ref]])
         
         #Regulation of
         self.tau_l = 20*self.Kp_[0]*(w_ref[1] - self.q[17])
@@ -206,7 +215,7 @@ class Controller(LeafSystem):
 
         self.tau = [self.tau_l, self.tau_r, self.tau_l, self.tau_r]
         # Compute gravity forces for the current state
-        self.plant_context_ad.SetDiscreteState(self.q)
+        # self.plant_context_ad.SetDiscreteState(self.q)
         
         # Update the output port = state
         discrete_state.get_mutable_vector().SetFromVector(self.tau)
@@ -221,9 +230,10 @@ def create_sim_scene(sim_time_step):
     parser.AddModelsFromUrl("file://" + robot_path)
     parser.AddModelsFromUrl("file://" + scene_path)
     plant.Finalize()
+    plant_context = plant.CreateDefaultContext()
     
     #Initial rotation angle(z axis) of the robot 
-    init_angle_deg = -45; 
+    init_angle_deg = 45; 
     rotation_angle = init_angle_deg/180*np.pi 
 
     # Set the initial position of the robot
@@ -233,12 +243,13 @@ def create_sim_scene(sim_time_step):
     AddDefaultVisualization(builder=builder, meshcat=meshcat)
 
     # Add a PD controller to regulate the robot
-    controller = builder.AddNamedSystem("PD controller", Controller(plant))
+    controller = builder.AddNamedSystem("PD controller", Controller(plant, plant_context))
     
     # Create a constant source for desired positions
     desired_rotation_dedg = 0
     desired_rotation_angle = init_angle_deg/180*np.pi 
-    despos_ = [np.cos(desired_rotation_angle/2), 0.0, 0.0, np.sin(desired_rotation_angle/2),7,-4,0]
+
+    despos_ = [np.cos(desired_rotation_angle/2), 0.0, 0.0, np.sin(desired_rotation_angle/2),4,-2,0]
 
     des_pos = builder.AddNamedSystem("Desired position", ConstantVectorSource(despos_))
     
@@ -270,7 +281,7 @@ def run_simulation(sim_time_step):
     
     # Run simulation and record for replays in MeshCat
     meshcat.StartRecording()
-    simulator.AdvanceTo(50.0)  # Adjust this time as needed
+    simulator.AdvanceTo(40.0)  # Adjust this time as needed
     meshcat.PublishRecording() #For the replay
     plotGraphs(controller)
 
@@ -283,6 +294,7 @@ def plotGraphs(controller):
     axes0[0][0].grid(which='both',linestyle='--')
 
     axes0[1][0].plot(controller.time_array, controller.x_dot_array)
+    axes0[1][0].plot(controller.time_array, controller.x_dot_ref_array)
     axes0[1][0].set_title(f'X')
     axes0[1][0].grid(which='both',linestyle='--')
 
@@ -291,6 +303,7 @@ def plotGraphs(controller):
     axes0[0][1].grid(which='both',linestyle='--')
 
     axes0[1][1].plot(controller.time_array, controller.w_z_array)
+    axes0[1][1].plot(controller.time_array, controller.w_z_ref_array)
     axes0[1][1].set_title(f'w_z')
     axes0[1][1].grid(which='both',linestyle='--')
     plt.subplots_adjust(hspace=0.5)
@@ -312,7 +325,7 @@ def plotGraphs(controller):
 
 
     axes1[1][1].plot(controller.time_array,controller.y_error_array)
-    axes1[1][1].set_title(f'Angular Error')
+    axes1[1][1].set_title(f'Lateral Error')
     axes1[1][1].grid(which='both',linestyle='--')
     plt.subplots_adjust(hspace=0.5)
     """
