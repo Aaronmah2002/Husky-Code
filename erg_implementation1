@@ -20,22 +20,30 @@ from helper.dynamics import CalcRobotDynamics
 import matplotlib.pyplot as plt
 T = 0.2  # Prediction horizon
 dt = 1e-2
+##reset files
+files=["controller_q","q_v_erg","tau_erg","tau_pred","state_dyn","x_next","state_pred"]
+for i in files:
+    fil=i+".csv"
+    
+    with open (fil,mode="w",newline="") as file:
+        pass
+
 # Function to get the path relative to the script's directory
-def csv_writing_file(data1,data2,data3):
+def csv_writing_file(name:str,vector):
     # Define file name
-    filename = "data.csv"
-
+    filename = name+".csv"
     # Data to be written (list of lists)
-    data = [
-        [data1, data2, data3]
-    ]
-
+    for i in range(vector.shape[0]):
+        data=[vector]
+        #print(data)
+    
     # Open the file in write mode
     with open(filename, mode="a", newline="") as file:
         writer = csv.writer(file)
 
         # Write each row
         writer.writerows(data)
+    
 def get_relative_path(path):
     script_dir = os.path.dirname(os.path.abspath(__file__))
     return os.path.normpath(os.path.join(script_dir, path))
@@ -66,6 +74,7 @@ class Controller(LeafSystem):
 
         # Declare input ports for desired and current states
         self._current_state_port = self.DeclareVectorInputPort(name="Current_state", size=21)
+        
         self._desired_state_port = self.DeclareVectorInputPort(name="Desired_state", size=7)
         
 
@@ -149,6 +158,7 @@ class Controller(LeafSystem):
         robot_wheel_ang_velocity = self.q[17:21]
         """
         self.q = self._current_state_port.Eval(context)
+        csv_writing_file("controller_q",self.q)
         #print('positions',self.q[4],self.q[5],self.q[6])
         #print('velocities translations',self.q[14],self.q[15],self.q[16])
         #print('velocities rotations',self.q[11],self.q[12],self.q[13])
@@ -240,6 +250,7 @@ class Controller(LeafSystem):
         #self.tau_r = np.clip(self.tau_r , -20, 20)
 
         self.tau = np.array([self.tau_l, self.tau_r, self.tau_l, self.tau_r])
+        csv_writing_file("tau_controller",self.tau)
         
         # Compute gravity forces for the current state
         # self.plant_context_ad.SetDiscreteState(self.q)
@@ -268,8 +279,11 @@ def calc_dynamics(x, u, plant_pred, plant_context):
     plant_context.SetDiscreteState(x)
     plant_pred.get_actuation_input_port().FixValue(plant_context,u)
     state = plant_context.get_discrete_state()
-    #plant_context.CalcForcedDiscreteVariableUpdate(plant_context, state)
+    st=state.get_vector().value().flatten()
+    csv_writing_file("state_dyn",st)
+    #diagram_context.CalcForcedDiscreteVariableUpdate(plant_context, state)
     x_next = state.get_vector().value().flatten()
+    csv_writing_file("x_next",x_next)
     return x_next
 class ExplicitReferenceGovernor:
     def __init__(self, robust_delta_tau_, kappa_tau_, 
@@ -292,32 +306,12 @@ class ExplicitReferenceGovernor:
         self.eta_ = 0.05 
         self.zeta_q_ = 0.15
         self.delta_q_ = 0.1 
-        self.dt_ = 0.01  # Sampling time for the refrence governorclass ExplicitReferenceGovernor:
-    def __init__(self, robust_delta_tau_, kappa_tau_, 
-                 robust_delta_q_, kappa_q_, robust_delta_dq_, kappa_dq_, 
-                 robust_delta_dp_EE_, kappa_dp_EE_, kappa_terminal_energy_):
-        """
-        Initialize the Explicit Reference Governor (ERG) with given parameters.
-        
-        Args:
-            robust_delta_tau_ (float): Robustness parameter for joint torques.
-            kappa_tau_ (float): Scaling parameter for joint torques.
-            robust_delta_q_ (float): Robustness parameter for joint positions.
-            kappa_q_ (float): Scaling parameter for joint positions.
-            robust_delta_dq_ (float): Robustness parameter for joint velocities.
-            kappa_dq_ (float): Scaling parameter for joint velocities.
-            robust_delta_dp_EE_ (float): Robustness parameter for end-effector velocities.
-            kappa_dp_EE_ (float): Scaling parameter for end-effector velocities.
-            kappa_terminal_energy_ (float): Scaling parameter for terminal energy.
-        """
-        self.eta_ = 0.05 
-        self.zeta_q_ = 0.15
-        self.delta_q_ = 0.1 
         self.dt_ = 0.01  # Sampling time for the refrence governor
         self.num_positions=7
+
         num_positions=self.num_positions
 
-        self.num_velocities=4
+        self.num_velocities=4 #wz,Vx,Vy,Vz (vx,vy,vz)
         num_velocities=self.num_velocities
 
         # Controller gains
@@ -348,16 +342,17 @@ class ExplicitReferenceGovernor:
         # plant.SetPositionsAndVelocities(plant_context, x0 = np.array([0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785, 0.0, 0.0]))
         self.plant_pred.Finalize()
         self.plant_context = self.plant_pred.CreateDefaultContext()
+        self.control_erg=Controller(self.plant_pred,self.plant_context)
 
         # Prediction lists for joint positions, velocities, and torques
         self.q_pred_list_ = np.zeros((num_positions, self.num_pred_samples_ + 1)) #7
-        self.dq_pred_list_ = np.zeros((num_velocities, self.num_pred_samples_ + 1)) #2
+        self.dq_pred_list_ = np.zeros((4, self.num_pred_samples_ + 1)) #2
         self.tau_pred_list_ = np.zeros((4, self.num_pred_samples_ + 1)) #4
         
         # Limits for joint angles, velocities, and torques
         ##self.limit_q_min_ = np.array([-2.8973, -1.7628, -2.8973, -3.0718, -2.8973, -0.0175, -2.8973]) #useless
         ##self.limit_q_max_ = np.array([2.8973, 1.7628, 2.8973, -0.0698, 2.8973, 3.7525, 2.8973]) #useless
-        self.limit_tau_ = np.array([20,20,20,20]) #[20,20,20,20]
+        self.limit_tau_ = np.array([200,200,200,200]) #[20,20,20,20]
         self.limit_dq_ = np.array([10,10,10,10]) #[0,0,10]
         ##self.limit_dp_EE_ = [1.7, 2.5]  # Translation and rotation limits for the end effector #not for the moment
 
@@ -377,6 +372,8 @@ class ExplicitReferenceGovernor:
             np.array: Updated reference joint positions.
         """
         rho_ = self.navigationField(q_r, q_v)
+        #print(q_v)
+        
         DSM_ = self.trajectoryBasedDSM(q, dq, tau, q_v)
 
         if DSM_ > 0:
@@ -386,7 +383,7 @@ class ExplicitReferenceGovernor:
         
         return q_v_new
 
-    def navigationField(self, q_r, q_v):
+    def navigationField(self, q_r, q_v): # if rho cst --> q_v doesn't update
         """
         Compute the navigation field based on attraction and repulsion forces.
         """
@@ -408,6 +405,8 @@ class ExplicitReferenceGovernor:
         '''
         # Total navigation field
         rho = rho_att #+ rho_rep_q
+        csv_writing_file("navfield",rho)
+        
         return rho
 
     def trajectoryBasedDSM(self, q, dq, tau, q_v):
@@ -416,6 +415,7 @@ class ExplicitReferenceGovernor:
       """
       # Get trajectory predictions and save predicted q, dq, and tau in lists
       self.trajectoryPredictions(np.concatenate((q, dq,np.zeros(10))), tau, q_v)
+      
 
       # Compute DSMs
       DSM_tau_ = self.dsmTau()
@@ -441,12 +441,113 @@ class ExplicitReferenceGovernor:
     #   print(f"DSM_final: {DSM}")
       
       return DSM
+    
 
+    def compute_tau_u(self, q_v):
+        """
+        robot_rot_quaternion = self.q[0:4]
+        robot_pos = self.q[4:7]
+        robot_wheel_rot = self.q[7:11]
+        robot_ang_velocity = self.q[11:14]
+        robot_speed = self.q[14:17] #Absolute values
+        robot_wheel_ang_velocity = self.q[17:21]
+        """
+        
+         #Initialisation of the transformation matrices
+        self.abs_to_rel = []
+        self.rel_to_abs = []
+        #Initialisation of the controller parameters
+
+        self.Kp_ = [3.2]
+        
+        #self.numposition=self.plant.num_positions()
+        #self.numvelocities=self.plant.num_velocities()
+        #plant.GetPositions()
+        #plant.GetVelocities()
+        
+        
+
+        #Computation of rotation angle
+        self.theta = 2 * np.arctan2(self.q_v[3],self.q_v[0])
+        
+        #Computation of reltive to absolute trnaformation matrix
+        self.rel_to_abs = np.array([
+            [np.cos(self.theta), -np.sin(self.theta), 0],
+            [np.sin(self.theta),np.cos(self.theta),0],
+            [0,0,1]])
+        
+        #Computation of absolute to reltive tranformation matrix
+        self.abs_to_rel = self.rel_to_abs.T
+        
+        #Necessary absolute velocities : X*, Y*, W_z
+        self.abs_vel = np.array([
+            [self.q_v[14]],
+            [self.q_v[15]],
+            [self.q_v[13]]
+        ])
+
+        r = 0.165 #Wheel radius
+        d = 0.613 #Robot width (distance between wheels)
+
+        inv_kin_mat = np.array([
+            [1/r, d/(2*r)],
+            [1/r, -d/(2*r)],
+        ])
+
+
+        #Necessary relative velocities : x*, x*, w_z
+        self.rel_vel = self.abs_to_rel @ self.abs_vel
+
+        #Error computation in absolutevalues
+        X_error = self.q_r[4] - self.q_v[4]
+        Y_error = self.q_r[5] - self.q_v[5]
+
+        #Final angle for the robot in absolute/relative
+        ref_angle = 2 * np.arctan2(self.q_r[3],self.q_r[0])
+
+        #Angular error between the robot position and desired position
+        self.theta_error = np.arctan2(Y_error, X_error) - self.theta
+
+        #Y error between the robot position and desired position Absolute error X and Y-> relative error y
+        self.y_error = -X_error * np.sin(self.theta) + Y_error * np.cos(self.theta)
+
+        #X error between the robot position and desired position Absolute errors X and Y -> relative error x
+        self.x_error = X_error * np.cos(self.theta) + Y_error * np.sin(self.theta)
+
+        self.x_dot_ref = 1 * self.x_error - 0.2 * float(self.rel_vel[0])
+        #self.x_dot_ref = np.clip(self.x_dot_ref, -1, 1)
+
+        self.w_z_ref = 30 * self.y_error
+        #self.w_z_ref = np.clip(self.w_z_ref, -2, 2)
+
+        #=======================================
+        #x_dot_ref = 1
+        #w_z_ref = 1/2*np.sin(context.get_time()/2)
+
+        #Computation of the reference speeds of the wheels
+        w_ref = inv_kin_mat @ np.array([[self.x_dot_ref],[self.w_z_ref]])
+        
+        #Regulation of
+        self.tau_l = 20*self.Kp_[0]*(w_ref[1] - self.q[17])
+        self.tau_r = 20*self.Kp_[0]*(w_ref[0] - self.q[18])
+
+        #self.tau_l = np.clip(self.tau_l , -20, 20)
+        #self.tau_r = np.clip(self.tau_r , -20, 20)
+
+        self.tau = np.array([self.tau_l, self.tau_r, self.tau_l, self.tau_r])
+        csv_writing_file("tau_controller",self.tau)
+        
+        # Compute gravity forces for the current state
+        # self.plant_context_ad.SetDiscreteState(self.q)
+        
+        
+        #print('dimension of tau ',self.tau.shape()) #spoiler dime(tau)=4
     def trajectoryPredictions(self, state, tau, q_v):
       """
       Predict joint positions, velocities, and torques over the prediction horizon.
       """
-      q_pred, dq_pred = state[:num_positions], state[12:16]
+      q_pred, dq_pred = state[:num_positions], state[7:11]
+      
       tau_pred = tau
       # gravity_pred = np.zeros(plant.get_actuation_input_port().size())  # Placeholder for gravity prediction
 
@@ -463,16 +564,20 @@ class ExplicitReferenceGovernor:
       # self.distance_dq_ = self.distanceDq(dq_pred)
       # self.distance_dp_EE_ = self.distanceDpEE(q_pred, dq_pred)
 
-      for k in range(self.num_pred_samples_):
+      for k in range(self.num_pred_samples_): #200
           # Compute tau_pred
-          gravity_pred = - self.plant_pred.CalcGravityGeneralizedForces(self.plant_context) # Compute gravity_pred for the current state
+          #gravity_pred = - self.plant_pred.CalcGravityGeneralizedForces(self.plant_context) # Compute gravity_pred for the current state
           tau_pred =   self.Kd_ * dq_pred #+ gravity_pred 
+          #tau_pred=self.control_erg.compute_tau_u(self.plant_context,state)
+          
           
 
           # Solve for x[k+1] using the computed tau_pred
           state_pred = calc_dynamics(np.concatenate((q_pred, dq_pred,np.zeros(10))), tau_pred, self.plant_pred, self.plant_context)  # Adjust this based on your calculation method
+          #print(state_pred) only 7 elem ?????
           q_pred = state_pred[:num_positions]
-          dq_pred = state_pred[12:16]
+          ##print(q_pred)
+          dq_pred = state_pred[7:11]
 
           # # Store predicted states
           # q_pred_traj.append(q_pred.copy())
@@ -482,7 +587,8 @@ class ExplicitReferenceGovernor:
           self.q_pred_list_[:, k + 1] = q_pred
           self.dq_pred_list_[:, k + 1] = dq_pred
           self.tau_pred_list_[:, k + 1] = tau_pred
-      
+          csv_writing_file("tau_pred",self.tau_pred_list_)
+          csv_writing_file("state_pred",state_pred)
       # # Convert lists to arrays for plotting
       # q_pred_traj = np.array(q_pred_traj)
       # dq_pred_traj = np.array(dq_pred_traj)
@@ -507,14 +613,14 @@ class ExplicitReferenceGovernor:
         """
         for k in range(self.tau_pred_list_.shape[1]):  # number of prediction samples + 1
             tau_pred = self.tau_pred_list_[:, k]
-            DSM_tau_temp = self.distanceTau(tau_pred) - self.robust_delta_tau_
+            DSM_tau_temp = self.distanceTau(tau_pred) - self.robust_delta_tau_ #avoid violate limitation
             if k == 0:
                 DSM_tau = DSM_tau_temp
             else:
                 DSM_tau = min(DSM_tau, DSM_tau_temp)
 
         DSM_tau = self.kappa_tau_ * DSM_tau
-        return DSM_tau
+        return DSM_tau #with kappa_tau=0.1 --> always small
 
     def dsmQ(self):
         """
@@ -676,9 +782,10 @@ class ERG(LeafSystem):
         
         q_r = self._qr_port.Eval(context)
         q_v = self.q_v_n
-        csv_writing_file(tau[1],tau[2],tau[3],tau[4])
+        csv_writing_file("tau_erg",tau)
         q_v_n = self.erg.get_qv(q, dq, tau, q_r, q_v)
-        q_v_new = q_v_n  
+        q_v_new = q_v_n
+        csv_writing_file("q_v_erg",q_v_new)
         #print(q_v_new)
         #print(q_v_new)
         # Write into the output vector.
@@ -740,7 +847,7 @@ def create_sim_scene(sim_time_step):
     diagram.set_name("diagram")
     diagram_context = diagram.CreateDefaultContext()
     return diagram, diagram_context,controller
-
+diagram,diagram_context,controller = create_sim_scene(sim_time_step=0.001)
 # Create a function to run the simulation scene and save the block diagram:
 def run_simulation(sim_time_step):
     diagram,diagram_context,controller = create_sim_scene(sim_time_step)
@@ -760,7 +867,7 @@ def run_simulation(sim_time_step):
     '''
     # Run simulation and record for replays in MeshCat
     meshcat.StartRecording()
-    simulator.AdvanceTo(5.0)  # Adjust this time as needed
+    simulator.AdvanceTo(3.0)  # Adjust this time as needed
     meshcat.PublishRecording() #For the replay
     #plotGraphs(controller)
 
@@ -825,3 +932,12 @@ def plotGraphs(controller):
 
 # Run the simulation with a specific time step. Try gradually increasing it!
 run_simulation(sim_time_step=0.001)
+
+
+'''
+12/03
+
+issues with the code 
+
+due to calc_dynamic --> the state doesn't update so not good computation of the trajectory prediction
+'''
