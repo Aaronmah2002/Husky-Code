@@ -54,15 +54,10 @@ class Controller(LeafSystem):
         #Creation of the arrays storing all the data for plotting
         self.init_data(self)
 
-        self.k_a = [1,1]
-        self.k_v = [1,1]
-        self.k_p = [1,1]
-
         # Declare input ports for desired and current states
         self._current_state_port = self.DeclareVectorInputPort(name="Current_state", size=21)
         self._desired_state_port = self.DeclareVectorInputPort(name="Desired_state", size=7)
 
-        self.step = 1
         # Store plant and context for dynamics calculations
         self.plant, self.plant_context = plant, plant_context
 
@@ -214,15 +209,50 @@ class Controller(LeafSystem):
         fr = 0.05
         mu = 0.5
 
-        Rx = fr * (m * g / 2) * (sgn_x1 + sgn_x2)
+        Rx_stat = fr * (m * g / 2) * (sgn_x1 + sgn_x2) 
+
+        Fy_stat = mu * (m * g / (a + b)) * (b * sgn_y1 + a * sgn_y3)
+
+        Mr_stat = mu * (a * b * m * g / (a + b)) * (sgn_y1 - sgn_y3) + fr * (L * m * g / 2) * (sgn_x2 - sgn_x1)
+       
+        Rx = Rx_stat * eta[0][0]
+        Fy = Fy_stat * eta[0][0]
+        Mr_dyn = Mr_stat * self.q[13]
+
+        F_visc = np.array([
+            [0],
+            [0],
+            [Mr_dyn],
+            [Rx * np.cos(self.theta) - Fy * np.sin(self.theta)],
+            [Rx * np.sin(self.theta) + Fy * np.cos(self.theta)],
+            [0],
+            [0],
+            [0],
+            [0],
+            [0]])
 
 
-        Fy = mu * (m * g / (a + b)) * (b * sgn_y1 + a * sgn_y3)
+        error = np.array([self.q_d[4]- [self.q[4]], [self.q_d[5] - self.q[5]], [theta_d - self.theta]])
+        rel_error = self.abs_to_rel @ error
+
+        a_err = np.arctan2(rel_error[1],rel_error[0])
+
+        rel_error = self.abs_to_rel @ error
+
+        #print(f"s : {rel_error}  {a_err}  {rel_error[1] * a_err}\n\n\n")
+
+        #rel_error[1] = rel_error[1] * a_err
+
+        K_p_theta_variable = 40 / (0.1 + np.exp(70*(rel_error[0][0]**2 + rel_error[1][0]**2)))*0
+
+        u = np.array([[1.5, 0, 0],[0, 70, K_p_theta_variable]]) @ rel_error - np.array([[4, 0],[0, 100]]) @ eta
 
 
-        Mr = mu * (a * b * m * g / (a + b)) * (sgn_y1 - sgn_y3) + fr * (L * m * g / 2) * (sgn_x2 - sgn_x1)
         
-        F_mat = np.array([
+        Mr = np.abs(Mr_stat) * np.sign(u[1][0])
+        if(np.abs(u[1]) < 0.1):
+            Mr = 0
+        F_stat = np.array([
             [0],
             [0],
             [Mr],
@@ -233,20 +263,14 @@ class Controller(LeafSystem):
             [0],
             [0],
             [0]])
-
-        error = np.array([self.q_d[4]- [self.q[4]], [self.q_d[5] - self.q[5]], [theta_d - self.theta]])
-        rel_error = self.abs_to_rel @ error
-        a_err = np.arctan2(error[0],error[1])
-        error[1] = a_err
-        u = np.array([[2, 0, 0],[0, 80, 0]]) @ rel_error - np.array([[4, 0],[0, 100]]) @ eta
-
+        print(F_stat)
         M2 = np.transpose(G) @ M_mat @ G
         M3 = np.transpose(G) @ M_mat @ G_dot
-        tau = np.linalg.pinv(np.transpose(G) @ E_mat) @ (M2 @ u + M3 @ eta + np.transpose(G) @ (g_mat + C_mat + F_mat))
+        tau = np.linalg.pinv(np.transpose(G) @ E_mat) @ (M2 @ u + M3 @ eta + np.transpose(G) @ (g_mat + C_mat + F_stat + F_visc))
         
-        print(f"{rel_error} \n\n\n")
-        print(f"s : {F_mat} \n\n\n")
-        print(f"t : {tau} \n\n\n")
+        #print(f"{rel_error} \n\n\n")
+        
+        #print(f"t : {sgn_y1 - sgn_y3} \n\n\n")
         # Update the output port = state
         discrete_state.get_mutable_vector().SetFromVector(tau)
 
@@ -254,6 +278,7 @@ class Controller(LeafSystem):
 #HH = np.linalg.pinv(np.transpose(G) @ M_mat @ G) @ np.transpose(G) @ (E_mat @ np.array([[10],[-10],[10],[-10]]) - M_mat @ G_dot @ eta - (C_mat + g_mat) )
 ##################################################################################################
 # Function to Create Simulation Scene
+
 def create_sim_scene(sim_time_step):   
     builder = DiagramBuilder()
     plant, scene_graph = AddMultibodyPlantSceneGraph(builder, time_step=sim_time_step)
@@ -264,7 +289,7 @@ def create_sim_scene(sim_time_step):
     plant_context = plant.CreateDefaultContext()
     
     #Initial rotation angle(z axis) of the robot 
-    init_angle_deg = -15; 
+    init_angle_deg = 0; 
     rotation_angle = init_angle_deg/180*np.pi 
 
     # Set the initial position of the robot
@@ -278,7 +303,7 @@ def create_sim_scene(sim_time_step):
 
     desired_rotation_angle = 0/180*np.pi 
 
-    despos_ = [np.cos(desired_rotation_angle/2), 0.0, 0.0, np.sin(desired_rotation_angle/2),5,-2,0]
+    despos_ = [np.cos(desired_rotation_angle/2), 0.0, 0.0, np.sin(desired_rotation_angle/2),5,0,0]
 
     des_pos = builder.AddNamedSystem("Desired position", ConstantVectorSource(despos_))
     
