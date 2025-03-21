@@ -33,7 +33,7 @@ meshcat = StartMeshcat()
 visualize = False # Bool to switch the viszualization and simulation
 pathFollowing = False
 Max_Sim_Time = 30.0
-
+p =1
 
 meshcat.Delete()
 meshcat.DeleteAddedControls()
@@ -54,9 +54,20 @@ class Controller(LeafSystem):
         #Creation of the arrays storing all the data for plotting
         self.init_data(self)
 
+        self.nearestpoint = np.array([100000,100000])
+        self.first_point_selected = False
+
+        self.lookahead_dist = 0.5
+        self.nearestdist = 10000
+        self.nearest_ind = 0
+
+        self.v_prev = 0
+        self.w_prev = 0
         # Declare input ports for desired and current states
         self._current_state_port = self.DeclareVectorInputPort(name="Current_state", size=21)
         self._desired_state_port = self.DeclareVectorInputPort(name="Desired_state", size=7)
+
+        self._desired_state_port = self.DeclareVectorInputPort(name="Force_Contact")
 
         # Store plant and context for dynamics calculations
         self.plant, self.plant_context = plant, plant_context
@@ -93,7 +104,6 @@ class Controller(LeafSystem):
 
     def init_data(self,plant):
         #Initialisation of the data for graphs for plotting
-
         #Arrays storing the time
         self.time_array = []
 
@@ -116,8 +126,15 @@ class Controller(LeafSystem):
         self.x_error_array = []
         self.angular_error = []
 
-        self.x_dot_ref_array = []
-        self.w_z_ref_array = []
+        self.a_x_array = []
+        self.w_z_dot_array = []
+
+        self.a_x_ref = []
+        self.a_x_real = []
+
+        self.w_d_ref = []
+        self.w_d_real = []
+
 
     def compute_tau_u(self, context, discrete_state):
         """
@@ -128,6 +145,9 @@ class Controller(LeafSystem):
         robot_speed = self.q[14:17] #Absolute values
         robot_wheel_ang_velocity = self.q[17:21]
         """
+        current_time = context.get_time()
+        self.time_array.append(current_time)
+
 
         self.q = self._current_state_port.Eval(context)
         self.q_d = self._desired_state_port.Eval(context)
@@ -137,6 +157,16 @@ class Controller(LeafSystem):
         theta_d = 2 * np.arctan2(self.q_d[3],self.q_d[0])
         L = 0.670/2
         r = 0.165
+
+        eta = np.array([
+            [np.cos(self.theta) * self.q[14] + np.sin(self.theta) * self.q[15]],
+            [self.q[13]]])
+
+        x_icr = - float((-np.sin(self.theta) * self.q[14] + np.cos(self.theta) * self.q[15] ) / eta[1])
+        if(abs(eta[1]) < 0.05):
+            x_icr = 0
+
+        #print(f"icr : {x_icr}")
 
         M_mat = self.plant.CalcMassMatrix(self.plant_context) # 10x10 matrix
         C_mat = self.plant.CalcBiasTerm(self.plant_context).reshape(-1, 1) #1x10 matrix
@@ -159,29 +189,26 @@ class Controller(LeafSystem):
             [0, 0],
             [0, 0],
             [0, 1],
-            [np.cos(self.theta), 0],
-            [np.sin(self.theta), 0],
+            [np.cos(self.theta), np.sin(self.theta) * x_icr],
+            [np.sin(self.theta), -np.cos(self.theta) * x_icr],
             [0, 0],
-            [1/r, -L/r],
-            [1/r, L/r],
-            [1/r, -L/r],
-            [1/r, L/r]])
+            [1, -L],
+            [1, L],
+            [1, -L],
+            [1, L]])
 
         G_dot = np.array([
             [0, 0],
             [0, 0],
             [0, 0],
-            [-np.sin(self.theta), 0],
-            [np.cos(self.theta), 0],
+            [-np.sin(self.theta), np.cos(self.theta) * x_icr],
+            [np.cos(self.theta), np.sin(self.theta) * x_icr],
             [0, 0],
             [0, 0],
             [0, 0],
             [0, 0],
             [0, 0]])
 
-        eta = np.array([
-            [np.cos(self.theta) * self.q[14] + np.sin(self.theta) * self.q[15]],
-            [self.q[13]]])
 
         u = np.array([
             [1],
@@ -195,7 +222,7 @@ class Controller(LeafSystem):
 
         a=0.5
         b=0.5
-        m = 56.5
+        m = 125.5
         g = 9.81
 
         y_dot = -np.sin(self.theta) * self.q[14] + np.cos(self.theta) * self.q[15]
@@ -213,8 +240,9 @@ class Controller(LeafSystem):
 
         Fy_stat = mu * (m * g / (a + b)) * (b * sgn_y1 + a * sgn_y3)
 
-        Mr_stat = mu * (a * b * m * g / (a + b)) * (sgn_y1 - sgn_y3) + fr * (L * m * g / 2) * (sgn_x2 - sgn_x1)
+        Mr_stat = 5*mu * (a * b * m * g / (a + b)) * (sgn_y1 - sgn_y3) + fr * (L * m * g / 2) * (sgn_x2 - sgn_x1)
        
+        #print(f"friciton : {Fy_stat}  \n\n {4*F_fric_approx}")
         Rx = Rx_stat * eta[0][0]
         Fy = Fy_stat * eta[0][0]
         Mr_dyn = Mr_stat * self.q[13]
@@ -233,46 +261,114 @@ class Controller(LeafSystem):
 
 
         error = np.array([self.q_d[4]- [self.q[4]], [self.q_d[5] - self.q[5]], [theta_d - self.theta]])
+
+
+
+        if(pathFollowing and p == 0):
+            point_to_follow = self.nearestpoint
+            if(not self.first_point_selected):
+                self.first_point_selected = True
+                for point in range(self.path_steps+1):
+                    dist = np.sqrt( (self.circ_path_x[point]-self.q[4])**2 + (self.circ_path_y[point]-self.q[5])**2 )
+
+                    if dist < self.nearestdist:
+                        self.nearestdist = dist
+                        self.nearest_ind = point
+                        self.nearestpoint = np.array([self.circ_path_x[point],self.circ_path_y[point]])
+                        point_to_follow = self.nearestpoint
+
+            if(np.sqrt( (self.nearestpoint[0]-self.q[4])**2 + (self.nearestpoint[1]-self.q[5])**2 ) < self.lookahead_dist):
+                self.nearest_ind = self.nearest_ind + 1
+                self.nearest_ind = self.nearest_ind % self.path_steps
+                #print(nearest_ind)
+                self.nearestpoint = np.array([self.circ_path_x[self.nearest_ind],self.circ_path_y[self.nearest_ind]])
+                point_to_follow = self.nearestpoint
+
+            X_error = point_to_follow[0] - self.q[4]
+            Y_error = point_to_follow[1] - self.q[5]
+            error = np.array([[X_error],[Y_error],[0]])
+
+        if(pathFollowing and p == 1):
+            point_to_follow = self.nearestpoint
+            if(not self.first_point_selected):
+                self.first_point_selected = True
+                for point in range(self.path_steps+1):
+                    dist = np.sqrt( (self.inf_path_x[point]-self.q[4])**2 + (self.inf_path_y[point]-self.q[5])**2 )
+
+                    if dist < self.nearestdist:
+                        self.nearestdist = dist
+                        self.nearest_ind = point
+                        self.nearestpoint = np.array([self.inf_path_x[point],self.inf_path_y[point]])
+                        point_to_follow = self.nearestpoint
+
+            if(np.sqrt( (self.nearestpoint[0]-self.q[4])**2 + (self.nearestpoint[1]-self.q[5])**2 ) < self.lookahead_dist):
+                self.nearest_ind = self.nearest_ind + 1
+                self.nearest_ind = self.nearest_ind % self.path_steps
+                #print(nearest_ind)
+                self.nearestpoint = np.array([self.inf_path_x[self.nearest_ind],self.inf_path_y[self.nearest_ind]])
+                point_to_follow = self.nearestpoint
+
+            X_error = point_to_follow[0] - self.q[4]
+            Y_error = point_to_follow[1] - self.q[5]
+            error = np.array([[X_error],[Y_error],[0]])
+
+
         rel_error = self.abs_to_rel @ error
 
         a_err = np.arctan2(rel_error[1],rel_error[0])
 
         rel_error = self.abs_to_rel @ error
 
-        #print(f"s : {rel_error}  {a_err}  {rel_error[1] * a_err}\n\n\n")
+        #print(f"s : {rel_error}  {a_err}  {max(abs(rel_error[1]), abs(2*a_err))* np.sign(rel_error[1])}\n\n\n")
 
-        #rel_error[1] = rel_error[1] * a_err
+        #rel_error[1] = max(abs(rel_error[1]), abs(2*a_err))* np.sign(rel_error[1])
 
         K_p_theta_variable = 40 / (0.1 + np.exp(70*(rel_error[0][0]**2 + rel_error[1][0]**2)))*0
 
-        u = np.array([[1.5, 0, 0],[0, 70, K_p_theta_variable]]) @ rel_error - np.array([[4, 0],[0, 100]]) @ eta
-
-
-        
-        Mr = np.abs(Mr_stat) * np.sign(u[1][0])
-        if(np.abs(u[1]) < 0.1):
-            Mr = 0
-        F_stat = np.array([
-            [0],
-            [0],
-            [Mr],
-            [0],
-            [0],
-            [0],
-            [0],
-            [0],
-            [0],
-            [0]])
-        print(F_stat)
+        u = np.array([[2, 0, 0],[0, 250, K_p_theta_variable]]) @ rel_error - np.array([[3, 0],[0, 200]]) @ eta
+        #u = np.clip(u , -50, 50)
+        ax = np.clip(u[0], -3, 3)
+        w_z_dot = np.clip(u[1], -20,20)
+        #u = [ax,w_z_dot]
         M2 = np.transpose(G) @ M_mat @ G
         M3 = np.transpose(G) @ M_mat @ G_dot
-        tau = np.linalg.pinv(np.transpose(G) @ E_mat) @ (M2 @ u + M3 @ eta + np.transpose(G) @ (g_mat + C_mat + F_stat + F_visc))
+        tau = np.linalg.pinv(np.transpose(G) @ E_mat) @ (M2 @ u + M3 @ eta + np.transpose(G) @ (g_mat))
         
-        #print(f"{rel_error} \n\n\n")
+        tau = 2*tau
+        tau = np.clip(tau, -30, 30)
+
         
         #print(f"t : {sgn_y1 - sgn_y3} \n\n\n")
         # Update the output port = state
-        discrete_state.get_mutable_vector().SetFromVector(tau)
+        discrete_state.get_mutable_vector().SetFromVector([0,0,0,0])
+
+        self.tau_l_array.append(tau[0])
+        self.tau_r_array.append(tau[1])
+        self.X_pos_array.append(self.q[4])
+        self.Y_pos_array.append(self.q[5])
+
+
+        a =  (eta[0][0] - self.v_prev)/0.001
+        w_d = (eta[1][0] - self.w_prev)/0.001
+
+        self.v_prev = eta[0]
+        self.w_prev = eta[1]
+        u_real = np.array([[a], [w_d]])
+
+        self.a_x_ref.append(float(u_real[0]))
+        self.a_x_real.append(u[0][0])
+
+        self.w_d_real.append(float(u_real[1]))
+        self.w_d_ref.append(u[1][0])
+
+        self.y_error_array.append(rel_error[1])
+        self.x_error_array.append(rel_error[0])
+
+        self.x_dot_array.append(float(eta[0]))
+        self.w_z_array.append(float(eta[1]))
+        #print(f"a : {rel_error} \n\n\n")
+        
+        
 
 #Check to see the coherence of the original dynamics eq
 #HH = np.linalg.pinv(np.transpose(G) @ M_mat @ G) @ np.transpose(G) @ (E_mat @ np.array([[10],[-10],[10],[-10]]) - M_mat @ G_dot @ eta - (C_mat + g_mat) )
@@ -303,7 +399,7 @@ def create_sim_scene(sim_time_step):
 
     desired_rotation_angle = 0/180*np.pi 
 
-    despos_ = [np.cos(desired_rotation_angle/2), 0.0, 0.0, np.sin(desired_rotation_angle/2),5,0,0]
+    despos_ = [np.cos(desired_rotation_angle/2), 0.0, 0.0, np.sin(desired_rotation_angle/2), 0, 2, 0]
 
     des_pos = builder.AddNamedSystem("Desired position", ConstantVectorSource(despos_))
     
@@ -311,6 +407,7 @@ def create_sim_scene(sim_time_step):
     builder.Connect(plant.get_state_output_port(), controller.GetInputPort("Current_state")) 
     builder.Connect(controller.GetOutputPort("tau_u"), plant.get_actuation_input_port())
 
+    builder.Connect(plant.get_contact_results_output_port(), controller.GetInputPort("Force_Contact"))
     builder.Connect(des_pos.get_output_port(), controller.GetInputPort("Desired_state"))
     
     # Build and return the diagram
@@ -342,30 +439,45 @@ def run_simulation(sim_time_step):
 def plotGraphs(controller):
     #Speed plots
     fig0,axes0=plt.subplots(2,2)
-    fig0.canvas.set_window_title('')  
 
-    controller.z_robot_1_array.pop()
-    axes0[0][0].plot(controller.t_array, controller.z_robot_1_array)
-    axes0[0][0].set_title(f'z_1')
+    axes0[0][0].plot(controller.time_array, controller.tau_l_array)
+    axes0[0][0].set_title(f'Right torque')
     axes0[0][0].grid(which='both',linestyle='--')
 
-    controller.z_robot_2_array.pop()
-    axes0[1][0].plot(controller.t_array, controller.z_robot_2_array)
-    axes0[1][0].set_title(f'z_2')
+    axes0[1][0].plot(controller.time_array, controller.tau_r_array)
+    axes0[1][0].set_title(f'Left torque')
     axes0[1][0].grid(which='both',linestyle='--')
 
-    controller.z_robot_dot_1_array.pop()
-    controller.z_robot_dot_1_array.pop()
-    axes0[0][1].plot(controller.t_array, controller.z_robot_dot_1_array)
-    axes0[0][1].set_title(f'z_dot_1')
+    axes0[0][1].plot(controller.time_array, controller.w_d_real)
+    axes0[0][1].plot(controller.time_array, controller.w_d_ref)
+    axes0[0][1].set_title(f'Acceleration W')
     axes0[0][1].grid(which='both',linestyle='--')
 
-    controller.z_robot_dot_2_array.pop()
-    controller.z_robot_dot_2_array.pop()
-    axes0[1][1].plot(controller.t_array, controller.z_robot_dot_2_array)
-    axes0[1][1].set_title(f'z_dot_2')
+    axes0[1][1].plot(controller.time_array, controller.a_x_real)
+    axes0[1][1].plot(controller.time_array, controller.a_x_ref)
+    axes0[1][1].set_title(f'Acceleration x')
     axes0[1][1].grid(which='both',linestyle='--')
-    plt.subplots_adjust(hspace=0.5)
+
+
+    fig1,axes1=plt.subplots(2,2)
+
+    axes1[0][0].plot(controller.time_array, controller.y_error_array)
+    axes1[0][0].set_title(f'Y error')
+    axes1[0][0].grid(which='both',linestyle='--')
+
+    axes1[0][1].plot(controller.time_array, controller.x_error_array)
+    axes1[0][1].set_title(f'X error')
+    axes1[0][1].grid(which='both',linestyle='--')
+
+    axes1[1][1].plot(controller.X_pos_array, controller.Y_pos_array)
+    
+    #axes1[1][1].plot(controller.inf_path_x, controller.inf_path_y)
+    axes1[1][1].set_title(f'Pos')
+    axes1[1][1].grid(which='both',linestyle='--')
+    
+    #axes1[1][0].plot(controller.inf_path_x, controller.inf_path_y)
+    #axes1[1][0].set_title(f'Pos')
+    #axes1[1][0].grid(which='both',linestyle='--')
 
     plt.show()
 
