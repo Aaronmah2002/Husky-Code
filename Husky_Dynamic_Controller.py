@@ -67,7 +67,7 @@ class Controller(LeafSystem):
         self._current_state_port = self.DeclareVectorInputPort(name="Current_state", size=21)
         self._desired_state_port = self.DeclareVectorInputPort(name="Desired_state", size=7)
 
-        self._desired_state_port = self.DeclareVectorInputPort(name="Force_Contact")
+        #self._desired_state_port = self.DeclareVectorInputPort(name="Force_Contact")
 
         # Store plant and context for dynamics calculations
         self.plant, self.plant_context = plant, plant_context
@@ -407,7 +407,7 @@ def create_sim_scene(sim_time_step):
     builder.Connect(plant.get_state_output_port(), controller.GetInputPort("Current_state")) 
     builder.Connect(controller.GetOutputPort("tau_u"), plant.get_actuation_input_port())
 
-    builder.Connect(plant.get_contact_results_output_port(), controller.GetInputPort("Force_Contact"))
+    #builder.Connect(plant.get_contact_results_output_port(), controller.GetInputPort("Force_Contact"))
     builder.Connect(des_pos.get_output_port(), controller.GetInputPort("Desired_state"))
     
     # Build and return the diagram
