@@ -97,6 +97,8 @@ class ERG(LeafSystem):
         
         # self._qv_port = self.DeclareVectorInputPort(name="q_v", size=9)
         self.DeclareVectorOutputPort(name="q_v_filtered", size=7, calc=self.refrence)
+        self.q_v_state_index = self.DeclareDiscreteState(7)  # Assuming q_v_ has 7 elements
+
         
         self.q_v_n = trajInit_ 
 
@@ -111,14 +113,13 @@ class ERG(LeafSystem):
             offset_sec=1.0,  # The first event is at time zero.
             update=self.refrence) # Call the Update method defined below.  #
         
-    def refrence(self, context, output):
+    def refrence(self, context, discrete_state):
         # Evaluate the input ports
         state = self._state_port.Eval(context)
         q = state[:num_positions]
         dq = state[num_positions:]
         tau = self._tau_port.Eval(context)
         q_r = self._qr_port.Eval(context)
-        csv_writing_file("tau_erg",tau)
 
 
         
@@ -129,9 +130,10 @@ class ERG(LeafSystem):
             self.first_update = False
         self.q_v_ = self.erg.get_qv(q, dq, tau, q_r, self.q_v_)
         csv_writing_file("q_v_erg",self.q_v_)
+        csv_writing_file("tau_erg",tau)
         
         # Write into the output vector.
-        output.SetFromVector(self.q_v_)
+        discrete_state.set_value(self.q_v_)
 
 
         
@@ -276,11 +278,3 @@ def plotGraphs(controller):
 # Run the simulation with a specific time step. Try gradually increasing it!
 run_simulation(sim_time_step=0.001)
 
-
-'''
-12/03
-
-issues with the code 
-
-due to calc_dynamic --> the state doesn't update so not good computation of the trajectory prediction
-'''
