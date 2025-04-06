@@ -19,10 +19,15 @@ from pydrake.systems.primitives import ConstantVectorSource
 from pydrake.all import Variable, MakeVectorVariable
 from helper.dynamics import CalcRobotDynamics
 import matplotlib.pyplot as plt
-from first_controller import Controller
+from pydrake.systems.primitives import LogVectorOutput
+from pydrake.all import AbstractValue
+from pydrake.all import ContactResults
+
+
+from controller import Controller
 T = 0.2  # Prediction horizon
 dt = 1e-2
-trajInit_=[0,0,0,0,1,-1,0]
+trajInit_=[np.cos(0), 0.0, 0.0, np.sin(0), 0, 0, 0.138]
 ##reset files
 files=["controller_q","q_v_erg","tau_erg","tau_pred","state_dyn","x_next","state_pred","navfield"]
 for i in files:
@@ -47,6 +52,24 @@ def csv_writing_file(name:str,vector):
         # Write each row
         writer.writerows(data)
     
+def use_logger(logger,legend,simulator):
+    log_x = logger.FindLog(simulator.get_context())
+    time_data = log_x.sample_times()  # Get timestamps
+    state_data = log_x.data()
+    # Number of states
+    num_states = state_data.shape[0]
+    # Plot each state over time
+    plt.figure(figsize=(10, 6))
+
+    for i in range(num_states):
+        plt.plot(time_data, state_data[i, :], label=legend[i])
+
+    plt.xlabel("Time [s]")
+    plt.ylabel("State Values")
+    plt.title("State Evolution Over Time")
+    plt.legend()
+    plt.grid()
+    plt.show()
 def get_relative_path(path):
     script_dir = os.path.dirname(os.path.abspath(__file__))
     return os.path.normpath(os.path.join(script_dir, path))
@@ -61,6 +84,7 @@ meshcat.DeleteAddedControls()
 # Set the path to your robot model:
 robot_path = get_relative_path("../../models/descriptions/robots//husky_description/urdf/husky.urdf")
 scene_path = get_relative_path("../../models/objects&scenes/scenes/floor.sdf")
+box_object = get_relative_path("../../models/objects&scenes/objects/cylinder.sdf")
 
 
 ######################################################################################################
@@ -97,20 +121,22 @@ class ERG(LeafSystem):
         
         # self._qv_port = self.DeclareVectorInputPort(name="q_v", size=9)
         self.DeclareVectorOutputPort(name="q_v_filtered", size=7, calc=self.refrence)
-        self.q_v_state_index = self.DeclareDiscreteState(7)  # Assuming q_v_ has 7 elements
+        
+        self.q_v_ = self.DeclareDiscreteState(7)  # Assuming q_v_ has 7 elements
 
         
         self.q_v_n = trajInit_ 
-
-        self.erg = ExplicitReferenceGovernor(
-          robust_delta_tau_=0.01, kappa_tau_=1.0,
-          robust_delta_q_=0.1, kappa_q_=1.0, robust_delta_dq_=0.1, kappa_dq_=7.0,
-          robust_delta_dp_EE_=0.01, kappa_dp_EE_=7.0, kappa_terminal_energy_=7.5)
+        self.contact_results_port = self.DeclareAbstractInputPort("contact_results", AbstractValue.Make(ContactResults()))
+        self.erg = ExplicitReferenceGovernor(sim_time_step,  #put the deltas to 0 
+          robust_delta_tau_=0.01, kappa_tau_=5/32.08,
+          robust_delta_q_=0.1, kappa_q_=5/20, robust_delta_dq_=0.1, kappa_dq_=5/4,
+          robust_delta_dp_EE_=0.01, kappa_dp_EE_=7.0, kappa_terminal_energy_=7.5,contact_results_port=self.contact_results_port)
         self.first_update = True
+
         
         self.DeclarePeriodicDiscreteUpdateEvent(
             period_sec=1/100,  # One millisecond time step.
-            offset_sec=1.0,  # The first event is at time zero.
+            offset_sec=0.0,  # The first event is at time zero.
             update=self.refrence) # Call the Update method defined below.  #
         
     def refrence(self, context, discrete_state):
@@ -121,9 +147,6 @@ class ERG(LeafSystem):
         tau = self._tau_port.Eval(context)
         q_r = self._qr_port.Eval(context)
 
-
-        
-        
 
         if self.first_update:
             self.q_v_ = trajInit_  # or an appropriate initial value    
@@ -147,16 +170,20 @@ def create_sim_scene(sim_time_step):
     parser = Parser(plant)
     parser.AddModelsFromUrl("file://" + robot_path)
     parser.AddModelsFromUrl("file://" + scene_path)
+    parser.AddModelsFromUrl("file://" + box_object)
     plant.Finalize()
     plant_context = plant.CreateDefaultContext()
     
     #Initial rotation angle(z axis) of the robot 
     init_angle_deg = -45; 
-    rotation_angle = init_angle_deg/180*np.pi 
+    rotation_angle = init_angle_deg/180*np.pi
+    num=plant.num_positions()
+    vel=plant.num_velocities()
 
     # Set the initial position of the robot
     plant.SetDefaultPositions([np.cos(rotation_angle/2), 0.0, 0.0, np.sin(rotation_angle/2), 0, 0, 0.138, 0.0, 0.0, 0.0, 0.0]) #(quaternions), translations, wheel rotations
     
+
     # Add visualization to see the geometries in MeshCat
     AddDefaultVisualization(builder=builder, meshcat=meshcat)
 
@@ -170,7 +197,7 @@ def create_sim_scene(sim_time_step):
     desired_rotation_dedg = 0
     desired_rotation_angle = init_angle_deg/180*np.pi 
 
-    despos_ = [np.cos(desired_rotation_angle/2), 0.0, 0.0, np.sin(desired_rotation_angle/2),10,-8,0]
+    despos_ = [np.cos(desired_rotation_angle/2), 0.0, 0.0, np.sin(desired_rotation_angle/2),4,-4,0]
     
     des_pos = builder.AddNamedSystem("Desired position", ConstantVectorSource(despos_))
     
@@ -183,39 +210,125 @@ def create_sim_scene(sim_time_step):
     builder.Connect(plant.get_state_output_port(), controller.GetInputPort("Current_state")) 
     builder.Connect(controller.GetOutputPort("tau_u"), plant.get_actuation_input_port())
     builder.Connect(erg.GetOutputPort("q_v_filtered"),controller.GetInputPort("Desired_state"))
+
+    builder.Connect(plant.get_contact_results_output_port(), controller.GetInputPort("contact_results"))
     
 
+
+    logger_x = LogVectorOutput(erg.GetOutputPort("q_v_filtered"), builder) #state
+    logger_tau = LogVectorOutput(controller.GetOutputPort("tau_u"),builder)
+    logger_q = LogVectorOutput(plant.get_state_output_port(),builder)
+
+    '''
+    obstacle=plant.GetBodyByName("front_left_wheel_link")
+    pose_in_world=plant.EvalBodyPoseInWorld(plant_context, obstacle)
+    obs_position=pose_in_world.translation()
+    print("position of the obstacle in the plant simulation ",obs_position)
+    '''
     
+
     
     # Build and return the diagram
     diagram = builder.Build()
     diagram.set_name("diagram")
     diagram_context = diagram.CreateDefaultContext()
-    return diagram, diagram_context,controller
-diagram,diagram_context,controller = create_sim_scene(sim_time_step=0.001)
+    return diagram, diagram_context,logger_x, logger_tau,erg,logger_q,despos_
+
 # Create a function to run the simulation scene and save the block diagram:
 def run_simulation(sim_time_step):
-    diagram,diagram_context,controller = create_sim_scene(sim_time_step)
+    diagram,diagram_context,logger_q_v_,logger_tau,erg,logger_q, despos_ = create_sim_scene(sim_time_step)
     simulator = Simulator(diagram,diagram_context)
-    
     simulator.Initialize()
-    time.sleep(5); #Add 5s delay so the simulation is fluid
+    #time.sleep(5); #Add 5s delay so the simulation is fluid
     simulator.set_target_realtime_rate(1.)
-    '''
+    
     # Save the block diagram as an image file
     svg_data = diagram.GetGraphvizString(max_depth=2)
     graph = pydot.graph_from_dot_data(svg_data)[0]
-    image_path = "figures/block_diagram_husky.png"  # Change this path as needed
+    image_path = "block_diagram_husky.png"  # Change this path as needed
     graph.write_png(image_path)
     
     print(f"Block diagram saved as: {image_path}")
-    '''
+    
     # Run simulation and record for replays in MeshCat
     meshcat.StartRecording()
-    simulator.AdvanceTo(20.0)  # Adjust this time as needed
+    simulator.AdvanceTo(10)  # Adjust this time as needed
     meshcat.PublishRecording() #For the replay
+    
+
+
+    size=len(erg.erg.DSM_tau_list)
+    DSM_tau_list=np.array(erg.erg.DSM_tau_list)
+    DSM_q_list=np.array(erg.erg.DSM_q_list)
+    DSM_dq_list = np.array(erg.erg.DSM_qd_list)
+    DSM_=np.array(erg.erg.DSM_list)
+    
+    vec_x=np.arange(0,size,1)
     #plotGraphs(controller)
 
+    state_labels = [f"Q_scalar",f"Q_x",f"Q_y",f"Q_z",f"X",f"Y",f"Z"]  # Example labels
+    #use_logger(logger=logger_q_v_,simulator=simulator,legend=state_labels)
+    
+    
+    
+    log_qv = logger_q_v_.FindLog(simulator.get_context())
+    log_q = logger_q.FindLog(simulator.get_context())
+
+    time = log_qv.sample_times()
+    log_data_qv_x = log_qv.data()[4,:]
+    log_data_q_x = log_q.data()[4,:]
+    log_data_qv_y = log_qv.data()[5,:]
+    log_data_q_y = log_q.data()[5,:]
+    log_data_q_dot_x = log_q.data()[14,:]
+    log_data_q_dot_y = log_q.data()[15,:]
+    
+    use_logger(logger=logger_tau,simulator=simulator,legend=[f"tau_l",f"tau_r",f"tau_l",f"tau_r"])
+    
+    fig0,axes0=plt.subplots(4,1,figsize=(8,6))
+    axes0[0].plot(vec_x,DSM_tau_list)
+    axes0[0].set_title("DSM_tau")
+    axes0[1].plot(vec_x,DSM_q_list)
+    axes0[1].set_title("DSM_q")
+    axes0[2].plot(vec_x,DSM_dq_list)
+    axes0[1].set_title("DSM_qd")
+    axes0[3].plot(vec_x,DSM_,'k--',label = 'DSM')
+    axes0[3].set_title("DSM")
+    axes0[3].plot(vec_x,DSM_tau_list,'r',label = 'DSM_tau')
+    axes0[3].plot(vec_x,DSM_q_list,'g', label = 'DSM position')
+    axes0[3].plot(vec_x,DSM_dq_list,'y',label = 'DSM velocity')
+    
+    plt.tight_layout() 
+    
+    fig1,axes1=plt.subplots(2,2)
+    constant_value = np.zeros_like(time)
+    constant_value[time >= 0] = despos_[4]  # Change to the x desired position after t=0
+    axes1[0][0].plot(time,log_data_qv_x,label = 'q_v ERG')
+    axes1[0][0].plot(time,log_data_q_x,label = 'robot position')
+    axes1[0][0].step(time,constant_value,where='post', color='r', linestyle='--', label='reference')
+    axes1[0][0].legend()
+    axes1[0][0].set_xlabel('time [s]')
+    axes1[0][0].set_title('Position comparaison')
+
+
+    constant_value_y = np.zeros_like(time)
+    constant_value_y[time >= 0] = despos_[5]  # Change to the x desired position after t=0
+    axes1[0][1].plot(time,log_data_qv_y,label = 'q_v ERG')
+    axes1[0][1].plot(time,log_data_q_y,label = 'robot position')
+    axes1[0][1].step(time,constant_value_y,where='post', color='r', linestyle='--', label='reference')
+    axes1[0][1].legend()
+    axes1[0][1].set_xlabel('time [s]')
+    axes1[0][1].set_title('Position comparaison')
+
+    axes1[1][0].set_title('Velocity of the robot in world frame')
+    axes1[1][0].plot(time,log_data_q_dot_x,label = 'V_x')
+    axes1[1][0].legend() 
+    axes1[1][0].set_xlabel('time [s]')
+
+    axes1[1][1].set_title('Velocity of the robot in world frame')
+    axes1[1][1].plot(time,log_data_q_dot_y,label = 'V_y')
+    axes1[1][1].legend() 
+    axes1[1][1].set_xlabel('time [s]')
+    plt.show()
 def plotGraphs(controller):
     #Speed plots
     fig0,axes0=plt.subplots(2,2)
@@ -276,5 +389,6 @@ def plotGraphs(controller):
 
 
 # Run the simulation with a specific time step. Try gradually increasing it!
-run_simulation(sim_time_step=0.001)
+sim_time_step=0.001
+run_simulation(sim_time_step)
 
