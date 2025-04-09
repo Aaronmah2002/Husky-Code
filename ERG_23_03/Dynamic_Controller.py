@@ -57,7 +57,7 @@ class Controller(LeafSystem):
         self.case = 0
         self.f_x = [0,0,0,0]
         self.f_y = [0,0,0,0]
-
+        self.F_abs = np.zeros((4, 3))
         self.F_abs1 = np.zeros((4, 3))
         self.F_abs2 = np.zeros((4, 3))
 
@@ -68,6 +68,8 @@ class Controller(LeafSystem):
         self._current_state_port = self.DeclareVectorInputPort(name="Current_state", size=21)
         self._desired_state_port = self.DeclareVectorInputPort(name="Desired_state", size=7)
         self.contact_results_port = self.DeclareAbstractInputPort("contact_results", AbstractValue.Make(ContactResults()))
+    
+        self.DeclareVectorOutputPort(name="contact_forces", size=12, calc = self.compute_friction)
         #self._desired_state_port = self.DeclareVectorInputPort(name="Force_Contact")
 
         # Store plant and context for dynamics calculations
@@ -102,6 +104,12 @@ class Controller(LeafSystem):
         for i in range(self.path_steps+1):
             self.inf_path_x.append( 2* np.cos(i*2*np.pi/self.path_steps) )
             self.inf_path_y.append( 2* np.sin(i*4*np.pi/self.path_steps) )
+
+
+    def compute_friction(self, context, discrete_state):
+        
+        discrete_state.set_value(self.F_abs.flatten)
+
 
     def init_data(self,plant):
         #Initialisation of the data for graphs for plotting
@@ -169,9 +177,9 @@ class Controller(LeafSystem):
 
         #print(f"icr : {x_icr}")
 
-        M_mat = self.plant.CalcMassMatrix(self.plant_context) # 10x10 matrix
-        C_mat = self.plant.CalcBiasTerm(self.plant_context).reshape(-1, 1) #1x10 matrix
-        g_mat = self.plant.CalcGravityGeneralizedForces(self.plant_context).reshape(-1, 1)
+        M_mat = self.plant.CalcMassMatrix(self.plant_context)[:10,:10] # 10x10 matrix
+        C_mat = self.plant.CalcBiasTerm(self.plant_context).reshape(-1, 1)[:10] #1x10 matrix
+        g_mat = self.plant.CalcGravityGeneralizedForces(self.plant_context)[:10].reshape(-1, 1)
         
         E_mat = np.array([
             [0, 0, 0, 0],
@@ -226,44 +234,31 @@ class Controller(LeafSystem):
         g = 9.81
 
         contact_results = self.contact_results_port.Eval(context)
-        if(self.case == 0):
-            for i in range(contact_results.num_point_pair_contacts()):
 
-                contact_info = contact_results.point_pair_contact_info(i)
-                
+        for i in range(contact_results.num_point_pair_contacts()):
+            if(i<4):
+                contact_info = contact_results.point_pair_contact_info(i) 
                 self.contact_point = contact_info.contact_point().tolist()
                 self.contact_force = contact_info.contact_force().tolist()
-                self.F_abs1[i] = self.contact_force
+                self.F_abs[i] = self.contact_force
                 self.f_x[i] = self.contact_force[0] #X (absolute) forces matrix F_L, F_R, B_L, B_R
                 self.f_y[i] = self.contact_force[1] #Y (absolute) forces matrix F_L, F_R, B_L, B_R
 
-        if(self.case == 1):
-            for i in range(contact_results.num_point_pair_contacts()):
-
-                contact_info = contact_results.point_pair_contact_info(i)
-                
-                self.contact_point = contact_info.contact_point().tolist()
-                self.contact_force = contact_info.contact_force().tolist()
-                self.F_abs2[i] = self.contact_force
-                self.f_x[i] = self.contact_force[0] #X (absolute) forces matrix F_L, F_R, B_L, B_R
-                self.f_y[i] = self.contact_force[1] #Y (absolute) forces matrix F_L, F_R, B_L, B_R
-        if(self.case == 0):
-            self.case = 1
-        else:
-            self.case = 0
-        F_abs = (self.F_abs1 + self.F_abs2)/2
-        F_abs = np.transpose(F_abs) #Friction force in abolute coordinates 3x4 Matrix
+        F_abs = np.transpose(self.F_abs) #Friction force in abolute coordinates 3x4 Matrix
 
         F_rel = self.abs_to_rel @ F_abs #Friction force in relative coordinates
+
+
+    
         
-        error = np.array([self.q_d[4]- [self.q[4]], [self.q_d[5] - self.q[5]], [theta_d - self.theta]])
+        error = np.array([self.q_d[4]- [self.q[4]], [self.q_d[5] - self.q[5]], [np.sin(theta_d - self.theta)]])
 
         rel_error = self.abs_to_rel @ error
-        K_p_theta_variable = 0
-        if(np.linalg.norm(rel_error[0:2]) < 0.1):
-            K_p_theta_variable = 12
-        print(K_p_theta_variable)
-        u = np.array([[1.5, 0, 0],[0, 10, K_p_theta_variable]]) @ rel_error - np.array([[5, 0],[0, 13]]) @ eta 
+        K_p_theta_variable = 10
+        #print(K_p_theta_variable)
+        u = np.array([[4, 0, 0],[0, 60, 0]]) @ rel_error - np.array([[7, 0],[0, 70]]) @ eta 
+
+
 
         Rx = F_rel[0][0] + F_rel[0][1] + F_rel[0][2] + F_rel[0][3]
         Fy = F_rel[1][0] + F_rel[1][1] + F_rel[1][2] + F_rel[1][3]
@@ -271,6 +266,8 @@ class Controller(LeafSystem):
         Rx = -Rx 
         Fy = -Fy 
         M_dyn = -M_dyn*0.7
+        
+        #print(M_dyn)
         
         #print(M_dyn)
         F_visc = np.array([
@@ -291,13 +288,33 @@ class Controller(LeafSystem):
 
         tau = np.linalg.pinv(np.transpose(G) @ E_mat) @ (M2 @ u + M3 @ eta + np.transpose(G) @ (g_mat + F_visc + C_mat))
         
-        tau = np.clip(tau, -20, 20)
+        #tau = np.transpose(tau)
+        #tau = np.clip(tau, -20, 20)
         
         discrete_state.get_mutable_vector().SetFromVector(tau)
+
+        self.tau_l_array.append(tau[0])
+        self.tau_r_array.append(tau[1])
+        self.X_pos_array.append(self.q[4])
+        self.Y_pos_array.append(self.q[5])
+
 
         a =  (eta[0][0] - self.v_prev)/0.001
         w_d = (eta[1][0] - self.w_prev)/0.001
 
         self.v_prev = eta[0]
         self.w_prev = eta[1]
-   
+        u_real = np.array([a, w_d])
+
+        self.a_x_real.append(float(u_real[0]))
+        self.a_x_ref.append(u[0][0])
+
+        self.w_d_real.append(float(u_real[1]))
+        self.w_d_ref.append(u[1][0])
+
+        self.y_error_array.append(rel_error[1])
+        self.x_error_array.append(rel_error[0])
+
+        self.x_dot_array.append(float(eta[0]))
+        self.w_z_array.append(float(eta[1]))
+       
