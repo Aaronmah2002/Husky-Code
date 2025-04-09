@@ -29,15 +29,7 @@ def get_relative_path(path):
     return os.path.normpath(os.path.join(script_dir, path))
 
 
-# Start the visualizer and clean up previous instances
-meshcat = StartMeshcat()
-visualize = False # Bool to switch the viszualization and simulation
-pathFollowing = False
-Max_Sim_Time = 20.0
-p =1
 
-meshcat.Delete()
-meshcat.DeleteAddedControls()
 
 # Set the path to your robot model:
 robot_path = get_relative_path("../models/descriptions/robots//husky_description/urdf/husky.urdf")
@@ -233,6 +225,7 @@ class Controller(LeafSystem):
         m = 125.5
         g = 9.81
 
+        '''
         contact_results = self.contact_results_port.Eval(context)
 
         for i in range(contact_results.num_point_pair_contacts()):
@@ -243,7 +236,7 @@ class Controller(LeafSystem):
                 self.F_abs[i] = self.contact_force
                 self.f_x[i] = self.contact_force[0] #X (absolute) forces matrix F_L, F_R, B_L, B_R
                 self.f_y[i] = self.contact_force[1] #Y (absolute) forces matrix F_L, F_R, B_L, B_R
-
+        '''
         F_abs = np.transpose(self.F_abs) #Friction force in abolute coordinates 3x4 Matrix
 
         F_rel = self.abs_to_rel @ F_abs #Friction force in relative coordinates
