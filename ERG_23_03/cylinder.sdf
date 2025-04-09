@@ -1,0 +1,44 @@
+<?xml version="1.0"?>
+<sdf version="1.7">
+    <model name="cylinder">
+      <pose>4 -4 8 0 0 0</pose>
+      <link name="cylinder_link">
+        <inertial>
+          <inertia>
+            <ixx>0.01</ixx>
+            <iyy>0.01</iyy>
+            <izz>0.01</izz>
+          </inertia>
+          <mass>0.8</mass>
+        </inertial>
+        <collision name="collision">
+          <geometry>
+          	<cylinder>
+            		<radius>0.3</radius>
+            		<length>0.8</length>
+          	</cylinder>
+          </geometry>
+          <drake:proximity_properties>
+            <drake:mu_dynamic>0.4</drake:mu_dynamic>
+            <drake:mu_static>0.4</drake:mu_static>
+            <drake:mesh_resolution_hint>0.5</drake:mesh_resolution_hint>
+            <drake:hydroelastic_modulus>1e7</drake:hydroelastic_modulus>
+            <drake:hunt_crossley_dissipation>1.25</drake:hunt_crossley_dissipation>
+            <drake:compliant_hydroelastic/>
+          </drake:proximity_properties>
+        </collision>
+        <visual name="visual">
+          <geometry>
+          	<cylinder>
+            		<radius>0.3</radius>
+            		<length>0.8</length>
+          	</cylinder>
+          </geometry>
+          <material>
+            <diffuse>1.0 0.55 0.0 0.5</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+</sdf>
+
